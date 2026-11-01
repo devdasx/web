@@ -219,6 +219,55 @@ describe('WalletConnect direct pairing', () => {
     expect(keyring.emit).toHaveBeenCalledOnce()
   })
 
+  it('cancels promptly while device identification is pending and cleans up only the new session', async () => {
+    const { adapter, provider, keyring } = setup()
+    provider.session = { topic: 'existing-session' }
+    provider.connect.mockImplementation(async () => {
+      provider.session = { topic: 'new-session' }
+    })
+    const identification = deferred()
+    mocks.getDeviceID.mockReturnValue(identification.promise)
+    const controller = new AbortController()
+    const rejected = vi.fn()
+    const pending = adapter
+      .pairDevice({ signal: controller.signal, onDisplayUri: vi.fn() })
+      .catch(rejected)
+    await vi.waitFor(() => expect(mocks.getDeviceID).toHaveBeenCalledOnce())
+    controller.abort()
+    await vi.waitFor(() =>
+      expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ name: 'AbortError' })),
+    )
+    expect(provider.signer.client.disconnect).toHaveBeenCalledExactlyOnceWith({
+      topic: 'new-session',
+      reason: { code: 6000, message: 'Wallet connection cancelled' },
+    })
+    expect(keyring.add).not.toHaveBeenCalled()
+    expect(keyring.emit).not.toHaveBeenCalled()
+    identification.reject(new Error('Account request failed'))
+    await vi.waitFor(() => expect(provider.removeListener).toHaveBeenCalled())
+    await pending
+    expect(provider.signer.client.disconnect).toHaveBeenCalledOnce()
+    expect(provider.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('cleans only the replacement if device identification fails', async () => {
+    const { adapter, provider, keyring } = setup()
+    provider.session = { topic: 'existing-session' }
+    provider.connect.mockImplementation(async () => {
+      provider.session = { topic: 'new-session' }
+    })
+    mocks.getDeviceID.mockRejectedValueOnce(new Error('Identification failed'))
+    await expect(
+      adapter.pairDevice({ signal: new AbortController().signal, onDisplayUri: vi.fn() }),
+    ).rejects.toThrow('Identification failed')
+    expect(provider.signer.client.disconnect).toHaveBeenCalledExactlyOnceWith({
+      topic: 'new-session',
+      reason: { code: 6000, message: 'Wallet connection failed' },
+    })
+    expect(keyring.add).not.toHaveBeenCalled()
+    expect(provider.disconnect).not.toHaveBeenCalled()
+  })
+
   it('delivers the exact URI and registers an approved wallet through the existing keyring', async () => {
     const { adapter, keyring, listeners, config } = setup()
     const approval = deferred()

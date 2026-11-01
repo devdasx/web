@@ -33,7 +33,7 @@ export class WalletConnectV2Adapter {
     wallet: WalletConnectV2HDWallet,
     provider: Awaited<ReturnType<typeof EthereumProvider.init>>,
     { onDisplayUri, signal }: DirectPairingOptions,
-  ): Promise<void> {
+  ): Promise<string> {
     if (signal.aborted) throw cancelled()
     const restoredTopic = provider.session?.topic
     const attempt = { pairingTopic: undefined as string | undefined }
@@ -88,6 +88,11 @@ export class WalletConnectV2Adapter {
         .then(() => wallet.initialize())
         .then(() => {
           if (signal.aborted) throw cancelled()
+          return wallet.getDeviceID()
+        })
+        .then(deviceID => {
+          if (signal.aborted) throw cancelled()
+          return deviceID
         })
         .catch(async error => {
           // This may settle after the cancellation race has already returned.
@@ -95,8 +100,9 @@ export class WalletConnectV2Adapter {
           throw error
         })
         .finally(() => provider.removeListener('display_uri', displayUri))
-      await Promise.race([pairing, cancellation])
+      const deviceID = await Promise.race([pairing, cancellation])
       if (signal.aborted) throw cancelled()
+      return deviceID
     } catch (error) {
       if (!signal.aborted) await disconnectPairing()
       await disconnectNewSession()
@@ -121,12 +127,10 @@ export class WalletConnectV2Adapter {
       const wallet = new WalletConnectV2HDWallet(provider)
 
       //  Enable session (triggers QR Code modal)
-      if (options) {
-        await this.initializeDirectWallet(wallet, provider, options)
-      } else {
-        await wallet.initialize()
-      }
-      const deviceID = await wallet.getDeviceID()
+      if (!options) await wallet.initialize()
+      const deviceID = options
+        ? await this.initializeDirectWallet(wallet, provider, options)
+        : await wallet.getDeviceID()
       if (options?.signal.aborted) {
         await wallet.disconnect()
         throw cancelled()
